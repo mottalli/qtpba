@@ -1,10 +1,10 @@
-package main
+package qtpba
 
 import "fmt"
 
 const (
-	colorRed = 31
-	colorGreen = 32
+	colorRed    = 31
+	colorGreen  = 32
 	colorYellow = 33
 	colorString = "\033[%dm%v\033[0m"
 )

@@ -21,9 +21,9 @@ def validWord(word):
 
     return True
 
-conn = sqlite3.connect("./qtpba.db")
+conn = sqlite3.connect("../db/qtpba.db")
 
-with codecs.open("blacklist.txt", "r", encoding="UTF-8") as f:
+with codecs.open("../static/blacklist.txt", "r", encoding="UTF-8") as f:
     blacklist = f.readlines()
 
 blacklist = map(lambda s: s.strip(), blacklist)
