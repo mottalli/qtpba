@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"github.com/gorilla/mux"
 	"net/http"
 	"os"
 	"qtpba"
@@ -19,7 +21,11 @@ func main() {
 		panic("The static files path " + staticDir + " does not exist")
 	}
 
-	//fmt.Println(qtpba.GetTweetStats().TopN(5))
+	router := mux.NewRouter()
+	qtpba.SetupRouter(router)
 
-	panic(http.ListenAndServe(":8000", http.FileServer(http.Dir(staticDir))))
+	fmt.Println(qtpba.GetTweetStats().TopN(10))
+
+	http.Handle("/", router)
+	panic(http.ListenAndServe(":8000", nil))
 }

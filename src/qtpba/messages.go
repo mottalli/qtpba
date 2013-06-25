@@ -2,6 +2,7 @@ package qtpba
 
 import (
 	"errors"
+	"strconv"
 	"time"
 )
 
@@ -37,6 +38,34 @@ func coordinateFromJSON(json interface{}) (coord Coordinate) {
 	return
 }
 
+func userFromJSON(userMap map[string]interface{}) (user TwitterUser) {
+	// Convert the ID from text to int64 (direct casting to int64 doesn't work)
+	idStr := userMap["id_str"].(string)
+	user.Id, _ = strconv.ParseInt(idStr, 10, 64)
+
+	user.Language = userMap["lang"].(string)
+	user.Name = userMap["name"].(string)
+	user.ScreenName = userMap["screen_name"].(string)
+
+	if description, ok := userMap["description"]; ok && description != nil {
+		user.Description = description.(string)
+	}
+
+	if followersCount, ok := userMap["followers_count"]; ok && followersCount != nil {
+		user.FollowersCount = int(followersCount.(float64))
+	}
+
+	if friendsCount, ok := userMap["friends_count"]; ok && friendsCount != nil {
+		user.FriendsCount = int(friendsCount.(float64))
+	}
+
+	if location, ok := userMap["location"]; ok && location != nil {
+		user.Location = location.(string)
+	}
+
+	return
+}
+
 func tweetFromJSON(rawTweet *ServerMessage) (tweet *Tweet, err error) {
 	tweet = new(Tweet)
 	err = nil
@@ -44,22 +73,16 @@ func tweetFromJSON(rawTweet *ServerMessage) (tweet *Tweet, err error) {
 	var ok bool
 
 	if text, ok := (*rawTweet)["text"]; ok {
-		if tweet.Text, ok = text.(string); !ok {
-			err = errors.New("Field 'text' cannot be converted to a string")
-			return
-		}
+		tweet.Text = text.(string)
 	} else {
-		err = errors.New("Field 'text' not found in server message")
+		err = errors.New("Field 'text' not found in server message (invalid tweet JSON)")
 		return
 	}
 
 	// Me fijo si puedo sacar el usuario
 	if _, ok = (*rawTweet)["user"]; ok {
-		if userMap, ok := (*rawTweet)["user"].(map[string]interface{}); ok {
-			if screenName, ok := userMap["screen_name"].(string); ok {
-				tweet.User = screenName
-			}
-		}
+		userMap := (*rawTweet)["user"].(map[string]interface{})
+		tweet.User = userFromJSON(userMap)
 	}
 
 	if coordinate, ok := (*rawTweet)["coordinates"]; ok && coordinate != nil {
@@ -67,9 +90,7 @@ func tweetFromJSON(rawTweet *ServerMessage) (tweet *Tweet, err error) {
 	}
 
 	if createdAt, ok := (*rawTweet)["created_at"]; ok {
-		if timeString, ok := createdAt.(string); ok {
-			tweet.Timestamp, _ = time.Parse("Mon Jan 2 15:04:05 -0700 2006", timeString)
-		}
+		tweet.Timestamp, _ = time.Parse(time.RubyDate, createdAt.(string))
 	}
 
 	return

@@ -1,1 +1,71 @@
-<img src="wordcloud.png" />
+<!DOCTYPE html>
+<html>
+    <head>
+        <script src="http://code.jquery.com/jquery-1.10.1.min.js"></script>
+        <script type="text/javascript" src="http://maps.googleapis.com/maps/api/js?key=AIzaSyCoQRAaDkVwaG2h9y7wJ2TnToRHvzLyyl8&sensor=false&libraries=visualization"></script>
+        <script type="text/javascript">
+        $(document).ready(function(ev) {
+//            $.getJSON("/api/coordinates", function(data) {
+            $.getJSON("/api/checkins", function(data) {
+                var icon = new google.maps.MarkerImage("");
+
+                var heatmap = new google.maps.Map(document.getElementById("heatmap_canvas"), {
+                    center: new google.maps.LatLng(-34.60, -58.43),
+                    zoom: 12,
+                    mapTypeId: google.maps.MapTypeId.ROADMAP
+                });
+
+                var positionArray = new Array();
+                var markersArray = new Array();
+                $.each(data, function(_, coordinate) {
+                    var latitude = coordinate["Lat"];
+                    var longitude = coordinate["Long"];
+
+                    var position = new google.maps.LatLng(latitude, longitude);
+
+                    positionArray.push(position);
+
+                    var marker = new google.maps.Marker({
+                        position: position,
+                        map: heatmap,
+                        title: coordinate["TweetId"].toString(),
+                        visible: false
+                    });
+                    markersArray.push(marker);
+                    google.maps.event.addListener(marker, 'click', function() {
+                        $.getJSON("/api/tweet/" + marker.title, function(tweet) {
+                            $('#tweet_text').text(tweet['Text']);
+                        });
+                    })
+                });
+
+                var mvcPositionArray = new google.maps.MVCArray(positionArray);
+                var heatmapLayer = new google.maps.visualization.HeatmapLayer({
+                    data: mvcPositionArray,
+                    radius: 40,
+                    dissipating: true
+                });
+                heatmapLayer.setMap(heatmap);
+
+                var lastZoom = heatmap.zoom;
+                google.maps.event.addListener(heatmap, 'zoom_changed', function() {
+                    var zoomingIn = (heatmap.zoom > lastZoom);
+                    if ( (heatmap.zoom == 15 && zoomingIn) || (heatmap.zoom == 14 && !zoomingIn) ) {
+                        $.each(markersArray, function(_, marker) {
+                            marker.setVisible(!marker.getVisible());
+                        });
+                    }
+
+                    lastZoom = heatmap.zoom;
+                });
+
+            });
+        });
+        </script>
+    </head>
+
+    <body>
+        <div id="heatmap_canvas" style="width: 1000px; height: 500px;"></div>
+        <div id="tweet_text"></div>
+    </body>
+</html>

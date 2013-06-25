@@ -5,18 +5,23 @@ import (
 	"fmt"
 	"github.com/kurrik/oauth1a"
 	"github.com/kurrik/twittergo"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type ServerMessage map[string]interface{}
 
+const RECEIVE_TIMEOUT = 5 * time.Minute
+
 func LoadCredentials() (client *twittergo.Client, err error) {
 	var credentials []byte
-	if credentials, err = ioutil.ReadFile(GetBaseDir() + "/conf/oauth_credentials"); err != nil {
+	if credentials, err = ioutil.ReadFile(GetFullPath("/conf/oauth_credentials.conf")); err != nil {
 		return nil, err
 	}
 
@@ -39,81 +44,97 @@ func LoadCredentials() (client *twittergo.Client, err error) {
 func StartListeningTweets() {
 	//words := []string{"buenos aires", "bsas", "baires", "bs.as.", "bs.as", "bs. as.", "b. aires"}
 	words := []string{}
-	bounds := []int{-59, -35, -58, -34}
+	bounds := []float64{-58.533353, -34.70588, -58.32942, -34.5336}
 
 	URL := generateURL(words, bounds)
+	logger.Println("Querying URL", URL)
 	req, err := http.NewRequest("POST", URL, nil)
 	if err != nil {
 		logger.Fatalln(fmt.Sprintf("Error creating HTTP request: %s", err))
 	}
 
-	// TODO: Clean this up!
-	client, err := LoadCredentials()
+	rawLogFile := GetFullPath("logs/raw_stream.log")
+	rawLog, err := os.OpenFile(rawLogFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
 	if err != nil {
-		logger.Fatalln(fmt.Sprintf("Error loading credentials: %s", err))
+		logger.Println("Unable to open", rawLogFile, "for appending")
 	}
-	client.OAuth.Sign(req, client.User)
 
+	messagesChan := make(chan ServerMessage)
+
+	// TODO: Refactor this, make two separate functions instead of putting all the
+	// code inside this function.
+	var resp *http.Response
+	connected := false
 	go func() {
+		if rawLog != nil {
+			defer rawLog.Close()
+		}
+
+		client, err := LoadCredentials()
+		if err != nil {
+			logger.Fatalln(fmt.Sprintf("Error loading credentials: %s", err))
+		}
+		client.OAuth.Sign(req, client.User)
+
 		for {
-			resp, err := client.HttpClient.Do(req)
+			connected = false
+			logger.Println("Opening connection to server...")
+			if resp, err = client.HttpClient.Do(req); err != nil {
+				logger.Println("Error opening connection:", err, ". Waiting 10 seconds.")
+				resp = nil
+				time.Sleep(10 * time.Second)
+				continue
+			}
+
+			logger.Println("Finished connecting")
+			connected = true
+
 			message := make(ServerMessage)
-			jsonDecoder := json.NewDecoder(resp.Body)
+
+			// Redirect output to both the log file and the JSON decoder
+			var reader io.Reader
+			if rawLog != nil {
+				reader = io.TeeReader(resp.Body, rawLog)
+			} else {
+				reader = resp.Body
+			}
+			jsonDecoder := json.NewDecoder(reader)
 			for {
-				if err = jsonDecoder.Decode(&message); err != nil {
-					logger.Println("Error decoding JSON stream:", err, ". Retrying connection.")
+				err = jsonDecoder.Decode(&message)
+				if err != nil {
+					if connected {
+						logger.Println("Error decoding JSON stream:", err, ". Retrying connection.")
+					} else {
+						logger.Println("Got disconnected. Retrying connection.")
+					}
+					time.Sleep(10 * time.Second)
 					break
 				}
-
-				processMessage(&message)
+				messagesChan <- message
 			}
 		}
 
 	}()
 
-	/*
-		// Get the username and the password from the environment
-		username, password := os.Getenv("QTPBA_USERNAME"), os.Getenv("QTPBA_PASSWORD")
-		if username == "" || password == "" {
-			logger.Fatal("QTPBA_USERNAME or QTPBA_PASSWORD environment variables not set")
-		}
-
-		go func() {
-			var err error
-			var req *http.Request
-
-			client := new(http.Client)
-
-			for {
-				if req, err = http.NewRequest("POST", URL, nil); err != nil {
-					panic(err) // Should not happen
-				}
-				req.SetBasicAuth(username, password)
-
-				var resp *http.Response
-				logger.Println("Connecting to", URL)
-				if resp, err = client.Do(req); err != nil {
-					logger.Println("Error requesting URL:", err, ". Trying again in 10 seconds...")
-					time.Sleep(10 * time.Second)
-					continue
-				}
-				logger.Println("Connected")
-
-				message := make(ServerMessage)
-				jsonDecoder := json.NewDecoder(resp.Body)
-				for {
-					if err = jsonDecoder.Decode(&message); err != nil {
-						logger.Println("Error decoding JSON stream:", err, ". Retrying connection.")
-						break
+	go func() {
+		for {
+			select {
+			case message := <-messagesChan:
+				processMessage(&message)
+			case <-time.After(RECEIVE_TIMEOUT):
+				if connected {
+					logger.Println("Timed out while waiting for stream. Disconnecting in 10 seconds.")
+					connected = false
+					if resp.Body != nil {
+						resp.Body.Close()
 					}
-
-					processMessage(&message)
 				}
 			}
-		}()*/
+		}
+	}()
 }
 
-func generateURL(words []string, bounds []int) (URL string) {
+func generateURL(words []string, bounds []float64) (URL string) {
 	// Generate the URL
 	URL = "https://stream.twitter.com/1.1/statuses/filter.json?"
 
@@ -121,10 +142,11 @@ func generateURL(words []string, bounds []int) (URL string) {
 	if len(bounds) > 0 {
 		URL += "locations="
 		for idx, coord := range bounds {
+			strCoord := strconv.FormatFloat(coord, 'f', 5, 64)
 			if idx == 0 {
-				URL += strconv.Itoa(coord)
+				URL += strCoord
 			} else {
-				URL += "," + strconv.Itoa(coord)
+				URL += "," + strCoord
 			}
 
 		}
