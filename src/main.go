@@ -14,7 +14,11 @@ const (
 )
 
 func main() {
-	go qtpba.StartListeningTweets()
+	conn, err := qtpba.NewTwitterConnection()
+	if err != nil {
+		panic(err)
+	}
+	conn.StartListeningTweets()
 
 	staticDir := qtpba.GetFullPath("static")
 	if _, err := os.Stat(staticDir); os.IsNotExist(err) {

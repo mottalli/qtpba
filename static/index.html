@@ -2,11 +2,15 @@
 <html>
     <head>
         <script src="http://code.jquery.com/jquery-1.10.1.min.js"></script>
-        <script type="text/javascript" src="http://maps.googleapis.com/maps/api/js?key=AIzaSyCoQRAaDkVwaG2h9y7wJ2TnToRHvzLyyl8&sensor=false&libraries=visualization"></script>
+        <script type="text/javascript" src="http://maps.googleapis.com/maps/api/js?key=AIzaSyCoQRAaDkVwaG2h9y7wJ2TnToRHvzLyyl8&amp;sensor=false&amp;libraries=visualization"></script>
+        <script type="text/javascript" src="/js/bootstrap.js"></script>
+
+        <link href="/css/bootstrap.min.css" rel="stylesheet" media="screen" />
+
         <script type="text/javascript">
         $(document).ready(function(ev) {
-//            $.getJSON("/api/coordinates", function(data) {
-            $.getJSON("/api/checkins", function(data) {
+            $.getJSON("/api/coordinates", function(data) {
+//            $.getJSON("/api/checkins", function(data) {
                 var icon = new google.maps.MarkerImage("");
 
                 var heatmap = new google.maps.Map(document.getElementById("heatmap_canvas"), {

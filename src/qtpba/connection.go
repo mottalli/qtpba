@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/kurrik/oauth1a"
-	"github.com/kurrik/twittergo"
+	//"github.com/kurrik/twittergo"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -15,123 +15,155 @@ import (
 	"time"
 )
 
-type ServerMessage map[string]interface{}
-
 const RECEIVE_TIMEOUT = 5 * time.Minute
 
-func LoadCredentials() (client *twittergo.Client, err error) {
-	var credentials []byte
-	if credentials, err = ioutil.ReadFile(GetFullPath("/conf/oauth_credentials.conf")); err != nil {
-		return nil, err
+type ServerMessage map[string]interface{}
+
+type TwitterConnection struct {
+	consumerKey, consumerSecret, accessToken, accessTokenSecret string
+	clientConfig                                                *oauth1a.ClientConfig
+	userConfig                                                  *oauth1a.UserConfig
+	request                                                     *http.Request
+	response                                                    *http.Response
+	httpClient                                                  *http.Client
+	oauth                                                       *oauth1a.Service
+	rawLogFile                                                  *os.File
+	connected                                                   bool
+	messagesChan                                                chan (ServerMessage)
+}
+
+func NewTwitterConnection() (conn *TwitterConnection, err error) {
+	conn = new(TwitterConnection)
+
+	if err = conn.loadCredentials(); err != nil {
+		return
 	}
 
-	lines := strings.Split(string(credentials), "\n")
-	if len(lines) < 4 {
-		return nil, fmt.Errorf("Invalid format for the oauth_credentials file")
+	// Set up file logging
+	rawLogFile := GetFullPath("logs/raw_stream.log")
+	conn.rawLogFile, err = os.OpenFile(rawLogFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
+	if err != nil {
+		logger.Println("Unable to open", rawLogFile, "for appending")
+		err = nil // Non fatal error
 	}
-
-	consumerKey, consumerSecret, accessToken, accessTokenSecret := lines[0], lines[1], lines[2], lines[3]
-
-	config := &oauth1a.ClientConfig{
-		ConsumerKey:    consumerKey,
-		ConsumerSecret: consumerSecret,
-	}
-	user := oauth1a.NewAuthorizedConfig(accessToken, accessTokenSecret)
-	client = twittergo.NewClient(config, user)
 	return
 }
 
-func StartListeningTweets() {
-	//words := []string{"buenos aires", "bsas", "baires", "bs.as.", "bs.as", "bs. as.", "b. aires"}
+func (conn *TwitterConnection) loadCredentials() (err error) {
+	var credentialsLines []byte
+	if credentialsLines, err = ioutil.ReadFile(GetFullPath("/conf/oauth_credentials.conf")); err != nil {
+		return
+	}
+
+	lines := strings.Split(string(credentialsLines), "\n")
+	if len(lines) < 4 {
+		return fmt.Errorf("Invalid format for the oauth_credentials file")
+	}
+
+	conn.consumerKey, conn.consumerSecret, conn.accessToken, conn.accessTokenSecret = lines[0], lines[1], lines[2], lines[3]
+
+	conn.clientConfig = &oauth1a.ClientConfig{
+		ConsumerKey:    conn.consumerKey,
+		ConsumerSecret: conn.consumerSecret,
+	}
+	conn.userConfig = oauth1a.NewAuthorizedConfig(conn.accessToken, conn.accessTokenSecret)
+	return
+}
+
+func (conn *TwitterConnection) setupClient() (err error) {
 	words := []string{}
 	bounds := []float64{-58.533353, -34.70588, -58.32942, -34.5336}
-
 	URL := generateURL(words, bounds)
 	logger.Println("Querying URL", URL)
-	req, err := http.NewRequest("POST", URL, nil)
-	if err != nil {
-		logger.Fatalln(fmt.Sprintf("Error creating HTTP request: %s", err))
+
+	if conn.request, err = http.NewRequest("POST", URL, nil); err != nil {
+		return
 	}
 
-	rawLogFile := GetFullPath("logs/raw_stream.log")
-	rawLog, err := os.OpenFile(rawLogFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
-	if err != nil {
-		logger.Println("Unable to open", rawLogFile, "for appending")
+	transport := new(http.Transport)
+	if proxy, _ := http.ProxyFromEnvironment(conn.request); proxy != nil {
+		transport.Proxy = http.ProxyURL(proxy)
+	}
+	conn.httpClient = &http.Client{Transport: transport}
+
+	baseURL := "https://api.twitter.com"
+	conn.oauth = &oauth1a.Service{
+		RequestURL:   baseURL + "/oauth/request_token",
+		AuthorizeURL: baseURL + "/oauth/authorize",
+		AccessURL:    baseURL + "/oauth/access_token",
+		ClientConfig: conn.clientConfig,
+		Signer:       new(oauth1a.HmacSha1Signer),
+	}
+	conn.oauth.Sign(conn.request, conn.userConfig)
+
+	return
+}
+
+func (conn *TwitterConnection) StartListeningTweets() {
+	go conn.mainConnectionLoop()
+	go conn.messageProcessingLoop()
+}
+
+func (conn *TwitterConnection) mainConnectionLoop() {
+	conn.messagesChan = make(chan ServerMessage)
+
+	if conn.rawLogFile != nil {
+		defer conn.rawLogFile.Close()
 	}
 
-	messagesChan := make(chan ServerMessage)
+	var err error
+	for {
+		conn.setupClient()
+		conn.connected = false
 
-	// TODO: Refactor this, make two separate functions instead of putting all the
-	// code inside this function.
-	var resp *http.Response
-	connected := false
-	go func() {
-		if rawLog != nil {
-			defer rawLog.Close()
+		logger.Println("Opening connection to server...")
+		if conn.response, err = conn.httpClient.Do(conn.request); err != nil {
+			logger.Println("Error opening connection:", err, ". Waiting 10 seconds.")
+			conn.response = nil
+			time.Sleep(10 * time.Second)
+			continue
+		}
+		logger.Println("Finished connecting")
+		conn.connected = true
+
+		message := make(ServerMessage)
+
+		// Redirect output to both the log file and the JSON decoder, if possible
+		var jsonDecoder *json.Decoder
+		if conn.rawLogFile != nil {
+			jsonDecoder = json.NewDecoder(io.TeeReader(conn.response.Body, conn.rawLogFile))
+		} else {
+			jsonDecoder = json.NewDecoder(conn.response.Body)
 		}
 
-		client, err := LoadCredentials()
-		if err != nil {
-			logger.Fatalln(fmt.Sprintf("Error loading credentials: %s", err))
-		}
-		client.OAuth.Sign(req, client.User)
-
+		// Decoding loop
 		for {
-			connected = false
-			logger.Println("Opening connection to server...")
-			if resp, err = client.HttpClient.Do(req); err != nil {
-				logger.Println("Error opening connection:", err, ". Waiting 10 seconds.")
-				resp = nil
+			if err = jsonDecoder.Decode(&message); err != nil {
+				logger.Println("Error decoding JSON stream:", err, ". Retrying connection in 10 seconds.")
 				time.Sleep(10 * time.Second)
-				continue
-			}
-
-			logger.Println("Finished connecting")
-			connected = true
-
-			message := make(ServerMessage)
-
-			// Redirect output to both the log file and the JSON decoder
-			var reader io.Reader
-			if rawLog != nil {
-				reader = io.TeeReader(resp.Body, rawLog)
+				break
 			} else {
-				reader = resp.Body
-			}
-			jsonDecoder := json.NewDecoder(reader)
-			for {
-				err = jsonDecoder.Decode(&message)
-				if err != nil {
-					if connected {
-						logger.Println("Error decoding JSON stream:", err, ". Retrying connection.")
-					} else {
-						logger.Println("Got disconnected. Retrying connection.")
-					}
-					time.Sleep(10 * time.Second)
-					break
-				}
-				messagesChan <- message
+				conn.messagesChan <- message
 			}
 		}
+	}
+}
 
-	}()
-
-	go func() {
-		for {
-			select {
-			case message := <-messagesChan:
-				processMessage(&message)
-			case <-time.After(RECEIVE_TIMEOUT):
-				if connected {
-					logger.Println("Timed out while waiting for stream. Disconnecting in 10 seconds.")
-					connected = false
-					if resp.Body != nil {
-						resp.Body.Close()
-					}
+func (conn *TwitterConnection) messageProcessingLoop() {
+	for {
+		select {
+		case message := <-conn.messagesChan:
+			processMessage(&message)
+		case <-time.After(RECEIVE_TIMEOUT):
+			if conn.connected {
+				logger.Println("Timed out while waiting for stream. Disconnecting in 10 seconds.")
+				conn.connected = false
+				if conn.response.Body != nil {
+					conn.response.Body.Close()
 				}
 			}
 		}
-	}()
+	}
 }
 
 func generateURL(words []string, bounds []float64) (URL string) {
