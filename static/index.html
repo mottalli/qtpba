@@ -9,8 +9,8 @@
 
         <script type="text/javascript">
         $(document).ready(function(ev) {
-            $.getJSON("/api/coordinates", function(data) {
-//            $.getJSON("/api/checkins", function(data) {
+//            $.getJSON("/api/coordinates", function(data) {
+            $.getJSON("/api/checkins", function(data) {
                 var icon = new google.maps.MarkerImage("");
 
                 var heatmap = new google.maps.Map(document.getElementById("heatmap_canvas"), {
